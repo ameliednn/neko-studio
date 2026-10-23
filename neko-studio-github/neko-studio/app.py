@@ -6,16 +6,59 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
 
-from neko import jobs, uploads
-from neko.config import ROOT, DURATIONS, MIN_MEDIA, ffmpeg_path, secret
-from neko.models import REJECTED, RELIABLE, TO_CHECK, MediaItem
-from neko.pipeline import list_reels, load_reel
-from neko.sources import SOURCES
+
+def _ensure_ffmpeg() -> str:
+    """Hosted servers may skip packages.txt. Then use the FFmpeg shipped with the
+    imageio-ffmpeg package (installed now if requirements.txt was not picked up), exposed
+    as plain "ffmpeg" on PATH so every module finds it. Returns '' or what went wrong."""
+    if shutil.which("ffmpeg"):
+        return ""
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "imageio-ffmpeg>=0.5,<1"],
+                       capture_output=True, text=True)
+        try:
+            import importlib
+            importlib.invalidate_caches()
+            import imageio_ffmpeg
+        except ImportError as exc:
+            return f"imageio-ffmpeg n'a pas pu être installé ({exc})"
+    try:
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        folder = Path(tempfile.gettempdir()) / "neko-ffmpeg"
+        folder.mkdir(exist_ok=True)
+        link = folder / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        if not link.exists():
+            try:
+                link.symlink_to(exe)
+            except OSError:
+                shutil.copy(exe, link)
+                link.chmod(0o755)
+        os.environ["PATH"] = f"{folder}{os.pathsep}{os.environ.get('PATH', '')}"
+        return ""
+    except Exception as exc:
+        return f"FFmpeg de secours inutilisable ({exc})"
+
+
+FFMPEG_PROBLEM = _ensure_ffmpeg()  # before importing neko, which looks FFmpeg up once
+
+from neko import jobs, uploads  # noqa: E402
+from neko.config import ROOT, DURATIONS, MIN_MEDIA, ffmpeg_path, secret  # noqa: E402
+from neko.models import REJECTED, RELIABLE, TO_CHECK, MediaItem  # noqa: E402
+from neko.pipeline import list_reels, load_reel  # noqa: E402
+from neko.sources import SOURCES  # noqa: E402
 
 IDEAS = ["Shirakawa-go, Japon", "Hallstatt, Autriche", "Chefchaouen, Maroc", "Positano, Italie"]
 AUTH_COOKIE = "neko_auth"
@@ -317,6 +360,11 @@ head_tags(set_cookie=st.session_state.pop("cookie_token", ""))
 gate()
 if not ffmpeg_path():
     st.error("FFmpeg est introuvable. Suivez l'étape 2 du guide d'installation, puis relancez Neko Studio.")
+    # What to send for help: why the fallback failed and which files this server really runs.
+    here = Path(__file__).resolve().parent
+    st.code(f"{FFMPEG_PROBLEM or 'FFmpeg de secours non trouvé'}\n"
+            f"Dossier de l'app : {here}\nFichiers : {', '.join(sorted(p.name for p in here.iterdir()))}\n"
+            f"Python : {sys.version.split()[0]}", language=None)
     st.stop()
 
 params = st.query_params
