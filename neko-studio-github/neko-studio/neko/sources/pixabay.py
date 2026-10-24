@@ -56,11 +56,14 @@ class PixabaySource(MediaSource):
                 width=f.get("width") or 0, height=f.get("height") or 0,
                 duration=float(v.get("duration") or 0), quality=0.75))
         for p in self._get("", query, image_type="photo"):
+            # The free API serves photos at 1280 px on the long side, whatever the original size.
+            full_w, full_h = p.get("imageWidth") or 0, p.get("imageHeight") or 0
+            ratio = min(1.0, 1280 / max(full_w, full_h, 1))
             items.append(MediaItem(
                 source=self.name, source_id=str(p["id"]), kind="photo",
                 download_url=p.get("largeImageURL", ""), page_url=p.get("pageURL", ""),
                 thumb_url=p.get("webformatURL", ""),
                 title=f"{_slug_title(p.get('pageURL', ''))} {p.get('tags', '')}", creator=p.get("user", ""),
                 license_name="Licence Pixabay", license_url=LICENSE_URL,
-                width=p.get("imageWidth") or 0, height=p.get("imageHeight") or 0, quality=0.7))
+                width=round(full_w * ratio), height=round(full_h * ratio), quality=0.7))
         return items

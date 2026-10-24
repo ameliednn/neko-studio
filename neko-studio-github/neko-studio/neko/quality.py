@@ -33,3 +33,24 @@ def rate(path: Path) -> float:
     clipped = ((gray < 5) | (gray > 250)).mean()
     exposure = np.clip(1 - abs(mean - 0.5) * 2.2, 0, 1) * (1 - min(clipped * 3, 1))
     return float(0.4 * sharp + 0.35 * vivid + 0.25 * exposure)
+
+
+def atmosphere(path: Path) -> float:
+    """0..1: how much mood an image carries, for the opening shot. Mist and fog (soft light,
+    low contrast, not dark), night with points of light, and warm golden or back light all
+    score high; rate() would wrongly call some of them dull."""
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((480, 480))
+            rgb = np.asarray(img, dtype=np.float32)
+    except Exception:
+        return 0.0
+    gray = rgb.mean(axis=2)
+    mean, contrast = gray.mean(), gray.std()
+    misty = float(np.clip((48 - contrast) / 28, 0, 1)) if 95 <= mean <= 215 else 0.0
+    lights = (gray > 200).mean()
+    night = 1.0 if mean < 75 and 0.004 <= lights <= 0.15 else 0.0
+    warmth = rgb[..., 0].mean() - rgb[..., 2].mean()
+    golden = float(np.clip((warmth - 20) / 40, 0, 1)) * 0.8 if 70 <= mean <= 200 else 0.0
+    return max(misty * 0.9, night, golden)

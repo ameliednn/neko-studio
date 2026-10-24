@@ -32,6 +32,7 @@ class MediaItem:
     quality: float = 0.5   # 0..1, from the source's own curation (featured, quality image, resolution)
     year: int = 0          # when it was shot, if known
     role: str = "place"    # "place", or "country" for the opening shots
+    wish: str = ""         # the requested shot from the search note it answers, if any
 
     @property
     def key(self) -> str:

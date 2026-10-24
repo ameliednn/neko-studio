@@ -11,6 +11,14 @@ OUTPUT_DIR = ROOT / "outputs"
 CACHE_DIR = ROOT / "cache"
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
+# Output sizes: "hd" for publishing, "rapide" about twice as light for small hosted servers.
+QUALITIES = {"hd": (1080, 1920), "rapide": (720, 1280)}
+
+
+def default_quality() -> str:
+    """HD on a real computer; the fast mode on small servers such as Streamlit Community Cloud."""
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 2)
+    return "hd" if cores > 2 else "rapide"
 DURATIONS = (15, 20, 30, 45, 60)
 MIN_MEDIA = 4  # below this, the reel would repeat too much or rely on doubtful media
 
@@ -50,5 +58,21 @@ def _add_winget_ffmpeg_to_path() -> None:
 _add_winget_ffmpeg_to_path()
 
 
-def ffmpeg_path(tool: str = "ffmpeg") -> str | None:
-    return shutil.which(tool)
+def _find_ffmpeg() -> str | None:
+    """The system FFmpeg, or else the one shipped with the imageio-ffmpeg package, so hosted
+    servers that skipped packages.txt still work."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+FFMPEG = _find_ffmpeg()
+
+
+def ffmpeg_path() -> str | None:
+    return FFMPEG

@@ -35,8 +35,10 @@ class WikimediaSource(MediaSource):
     def search(self, query: str) -> list[MediaItem]:
         items: list[MediaItem] = []
         # Photos the Commons community voted "Quality" or "Featured" come first: sharp, well exposed, well framed.
-        searches = [f'"{query}" incategory:Quality_images filetype:bitmap',
-                    f'"{query}" filetype:bitmap', f'"{query}" filetype:video']
+        # A place name is searched as one exact phrase; a theme ("hiking japan") word by word.
+        phrase = f'"{query}"' if getattr(query, "exact", True) else query
+        searches = [f'{phrase} incategory:Quality_images filetype:bitmap',
+                    f'{phrase} filetype:bitmap', f'{phrase} filetype:video']
         for search in searches:
             for page in self._query(search):
                 info = (page.get("imageinfo") or [{}])[0]

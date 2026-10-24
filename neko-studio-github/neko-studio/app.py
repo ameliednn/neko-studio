@@ -55,13 +55,15 @@ def _ensure_ffmpeg() -> str:
 FFMPEG_PROBLEM = _ensure_ffmpeg()  # before importing neko, which looks FFmpeg up once
 
 from neko import jobs, uploads  # noqa: E402
-from neko.config import ROOT, DURATIONS, MIN_MEDIA, ffmpeg_path, secret  # noqa: E402
+from neko.config import ROOT, DURATIONS, MIN_MEDIA, default_quality, ffmpeg_path, secret  # noqa: E402
 from neko.models import REJECTED, RELIABLE, TO_CHECK, MediaItem  # noqa: E402
 from neko.pipeline import list_reels, load_reel  # noqa: E402
 from neko.sources import SOURCES  # noqa: E402
 
-IDEAS = ["Shirakawa-go, Japon", "Hallstatt, Autriche", "Chefchaouen, Maroc", "Positano, Italie"]
+IDEAS = ["Shirakawa-go, Japon", "Randonnées Japon", "Bord de mer Corée", "Hallstatt, Autriche"]
 AUTH_COOKIE = "neko_auth"
+QUALITY_LABELS = {"rapide": "Rapide (720p)", "hd": "HD (1080p)"}
+MEDIA_TYPES = list(uploads.VIDEO_TYPES + uploads.PHOTO_TYPES)
 
 st.set_page_config(page_title="Neko Studio", page_icon=str(ROOT / "static" / "icon-180.png"), layout="centered")
 
@@ -147,7 +149,10 @@ def gate() -> None:
 def prefs() -> dict:
     """Montage options chosen on the home screen (defaults when this device never opened them)."""
     look = "naturel" if st.session_state.get("opt_look") == "Naturelles" else "vif"
-    return {"intro": st.session_state.get("opt_intro", True), "look": look}
+    quality = next((k for k, v in QUALITY_LABELS.items() if v == st.session_state.get("opt_quality")),
+                   default_quality())
+    return {"intro": st.session_state.get("opt_intro", True), "look": look, "quality": quality,
+            "pick_opener": st.session_state.get("opt_pick", False)}
 
 
 def go(**params: str) -> None:
@@ -172,10 +177,20 @@ def home() -> None:
                 unsafe_allow_html=True)
 
     with st.form("create", border=False):
-        place = st.text_input("Destination", key="place_input", placeholder="Ex. : Shirakawa-go, Japon",
+        place = st.text_input("Destination", key="place_input", placeholder="Un lieu ou une envie : Shirakawa-go, Japon · Randonnées Japon",
                               label_visibility="collapsed")
         choice = st.segmented_control("Durée", [f"{d} s" for d in DURATIONS], default="20 s",
                                       label_visibility="collapsed")
+        note = st.text_area("Plans souhaités (facultatif)", key="note_input", height=80,
+                            placeholder="Ex. : baie vue du large, façades funaya, ruelles, bateau de pêche",
+                            help="Séparez les idées par des virgules. Chacune est cherchée à part et passe en "
+                                 "priorité ; si rien d'authentique n'est trouvé, l'app le signale au lieu de la "
+                                 "remplacer par un endroit ressemblant. Les mots courants sont traduits, l'anglais "
+                                 "donne les meilleurs résultats.")
+        files = st.file_uploader("Ajouter mes vidéos et photos (facultatif)", type=MEDIA_TYPES,
+                                 accept_multiple_files=True,
+                                 help="Elles passent en premier ; Neko Studio complète avec des images "
+                                      "réelles du lieu pour atteindre la durée choisie.")
         submitted = st.form_submit_button("Créer mon Reel", type="primary", width="stretch")
 
     st.pills("Idées", IDEAS, key="idea", label_visibility="collapsed",
@@ -185,12 +200,18 @@ def home() -> None:
         labels = {name: cls.label for name, cls in SOURCES.items()}
         st.multiselect("Sources autorisées", list(labels), default=list(labels), format_func=labels.get,
                        key="opt_sources")
-        st.toggle("Ouvrir sur 2 belles vues du pays (si le pays est indiqué)", value=True, key="opt_intro")
+        st.segmented_control("Qualité", list(QUALITY_LABELS.values()), default=QUALITY_LABELS[default_quality()],
+                             key="opt_quality",
+                             help="Rapide : environ deux fois moins de calcul, idéal sur le serveur en ligne. "
+                                  "HD : la meilleure netteté, plus long.")
+        st.toggle("Choisir moi-même la première image (3 propositions)", key="opt_pick",
+                  help="Avant le montage, l'app propose ses 3 meilleures ouvertures : vues panoramiques, "
+                       "brumeuses ou mystérieuses, montrant ce qu'on ne voit nulle part ailleurs. "
+                       "Vous pouvez aussi écrire « ouverture : brume sur la baie » dans les plans souhaités.")
+        st.toggle("Ajouter 2 belles vues du pays après la première image (si le pays est indiqué)", value=True,
+                  key="opt_intro")
         st.segmented_control("Couleurs", ["Vives", "Naturelles"], default="Vives", key="opt_look")
         st.toggle("Toujours me montrer les images avant le montage", key="opt_review")
-        if not secret("PEXELS_API_KEY"):
-            st.caption("Pexels n'est pas encore configuré (clé API absente) : les vidéos viendront "
-                       "seulement de Wikimedia Commons.")
 
     if submitted:
         if not place.strip():
@@ -198,8 +219,10 @@ def home() -> None:
         else:
             seconds = int((choice or "20 s").split()[0])
             sources = st.session_state.get("opt_sources") or list(SOURCES)
+            with st.spinner("Envoi de vos médias…") if files else st.empty():
+                mine = [uploads.save(f.name, f.getvalue()) for f in files or []]
             job = jobs.start(place.strip(), seconds, sources, review=st.session_state.get("opt_review", False),
-                             **prefs())
+                             mine=mine, note=note, **prefs())
             go(job=job.id)
 
     reels = list_reels(9)
@@ -229,7 +252,9 @@ def job_screen(job_id: str) -> None:
         go(reel=job.reel)
 
     st.markdown(f'<p class="neko-title">{job.place}</p>', unsafe_allow_html=True)
-    st.markdown(f'<p class="neko-meta">Reel de {job.seconds} s · 1080 × 1920</p>', unsafe_allow_html=True)
+    mine = f" · {len(job.mine)} de vos médias" if job.mine else ""
+    st.markdown(f'<p class="neko-meta">Reel de {job.seconds} s · {QUALITY_LABELS[job.quality]}{mine}</p>',
+                unsafe_allow_html=True)
 
     if job.state in ("search", "render"):
         @st.fragment(run_every=1.0)
@@ -240,16 +265,48 @@ def job_screen(job_id: str) -> None:
             st.progress(min(current.progress, 1.0), current.message)
 
         watch()
-        st.caption("Vous pouvez verrouiller votre téléphone : le montage continue sur l'ordinateur. "
+        st.caption("Vous pouvez verrouiller votre téléphone : le montage continue sur le serveur. "
                    "Rouvrez Neko Studio pour retrouver votre Reel.")
     elif job.state == "error":
         st.error(f"Le montage a échoué : {job.error}")
         if st.button("Réessayer", type="primary", width="stretch"):
-            go(job=jobs.start(job.place, job.seconds, job.sources, job.seed + 1, intro=job.intro, look=job.look).id)
+            go(job=jobs.start(job.place, job.seconds, job.sources, job.seed + 1, intro=job.intro, look=job.look,
+                              quality=job.quality, mine=job.mine, note=job.note).id)
         if st.button("Accueil", width="stretch"):
             go()
     elif job.state == "review":
         review_screen(job)
+    elif job.state == "opener":
+        opener_screen(job)
+
+
+def preview(path: Path, width: int = 360) -> bytes:
+    """A light JPEG of a large photo or video still, quick to show on a phone."""
+    from io import BytesIO
+    from PIL import Image
+    with Image.open(path) as img:
+        img = img.convert("RGB")
+        img.thumbnail((width, width * 2))
+        out = BytesIO()
+        img.save(out, "JPEG", quality=82)
+        return out.getvalue()
+
+
+def opener_screen(job: jobs.Job) -> None:
+    st.markdown("**Quelle première image ?** Elle décide si on regarde la suite : choisissez la plus "
+                "spectaculaire, mystérieuse ou étonnante.")
+    cols = st.columns(len(job.choices))
+    for col, (_, item, still) in zip(cols, job.choices):
+        with col:
+            try:
+                st.image(preview(still))
+            except Exception:
+                st.caption(item.title.split(".")[0][:40])
+            kind = "Vidéo" if item.kind == "video" else "Photo"
+            st.caption(f"{kind} · {item.reasons[0][:50] if item.reasons else ''}")
+            if st.button("Ouvrir avec celle-ci", key=f"pick_{job.id}_{item.key}", type="primary", width="stretch"):
+                jobs.choose(job, item.key)
+                st.rerun()
 
 
 def media_card(item: MediaItem, key: str, label: str, default: bool) -> bool:
@@ -263,25 +320,27 @@ def media_card(item: MediaItem, key: str, label: str, default: bool) -> bool:
                     f'text-align:center;font-size:0.85rem">{item.title.split(".")[0][:40]}</div>',
                     unsafe_allow_html=True)
     kind = '<span class="neko-badge b-video">VIDÉO</span>' if item.kind == "video" else ""
+    link = f' · <a href="{item.page_url}" target="_blank">source</a>' if item.page_url else ""
     st.markdown(f'{kind}<span class="neko-badge {css}">{name}</span>'
-                f'<div class="neko-meta">{item.reasons[0] if item.reasons else ""} · '
-                f'<a href="{item.page_url}" target="_blank">source</a></div>', unsafe_allow_html=True)
+                f'<div class="neko-meta">{item.reasons[0] if item.reasons else ""}{link}</div>', unsafe_allow_html=True)
     return st.checkbox(label, value=default, key=key)
 
 
 def review_screen(job: jobs.Job) -> None:
     reliable = [i for i in job.items if i.status == RELIABLE]
     doubtful = [i for i in job.items if i.status == TO_CHECK]
-    if len(reliable) < MIN_MEDIA:
+    if len(reliable) + len(job.mine) < MIN_MEDIA:
         st.warning(f"Il manque des médias authentiques : seulement {len(reliable)} image(s) portent le nom exact "
-                   f"de ce lieu. Cochez uniquement celles qui montrent vraiment {job.place}, ou essayez une "
-                   "orthographe plus courante (en anglais, avec le pays).")
+                   f"de ce lieu. Cochez uniquement celles qui montrent vraiment {job.place}, ajoutez vos propres "
+                   "médias depuis l'accueil, ou essayez une orthographe plus courante (en anglais, avec le pays).")
     else:
         st.info("Choisissez les images à utiliser. Les images fiables sont déjà cochées.")
+    if job.mine:
+        st.caption(f"Vos {len(job.mine)} médias sont inclus d'office et passeront en premier.")
     for err in job.errors:
         st.caption(err)
     picked = {i.key for i in jobs.best_reliable(job.items, jobs.AUTO_PICK)}
-    selected: list[MediaItem] = []
+    selected: list[MediaItem] = list(job.mine)
     cols = st.columns(3)
     for k, item in enumerate((reliable + doubtful)[:36]):
         with cols[k % 3]:
@@ -295,10 +354,10 @@ def review_screen(job: jobs.Job) -> None:
     if unsure:
         ready = st.checkbox(f"Je confirme que les {len(unsure)} image(s) « à vérifier » cochées montrent bien "
                             f"{job.place}.") and ready
-    st.caption(f"{len(selected)} image(s) choisie(s) · il en faut au moins {MIN_MEDIA}.")
+    st.caption(f"{len(selected)} média(s) choisi(s) · il en faut au moins {MIN_MEDIA}.")
     if st.button("Créer le Reel avec cette sélection", type="primary", disabled=not ready, width="stretch"):
         go(job=jobs.start(job.place, job.seconds, job.sources, job.seed, items=selected, intro=job.intro,
-                          look=job.look).id)
+                          look=job.look, quality=job.quality).id)
     if st.button("Changer de destination", width="stretch"):
         go()
 
@@ -315,22 +374,27 @@ def reel_screen(name: str) -> None:
     if st.button("← Nouvelle destination"):
         go()
     st.markdown(f'<p class="neko-title">{reel["place"]}</p>', unsafe_allow_html=True)
-    st.markdown(f'<p class="neko-meta">{reel["seconds"]} s · {reel["shots"]} plans · 1080 × 1920 · '
+    st.markdown(f'<p class="neko-meta">{reel["seconds"]} s · {reel["shots"]} plans · {reel["format"]} · '
                 f'{reel["created"]:%d/%m/%Y %H:%M}</p>', unsafe_allow_html=True)
+    if reel["requested"] > reel["seconds"]:
+        st.info(f"Reel de {reel['seconds']} s au lieu de {reel['requested']} s : chaque image n'est utilisée "
+                "qu'une fois et il n'y avait pas assez de médias différents. Ajoutez vos vidéos ou élargissez "
+                "la recherche (par exemple avec un thème : « Randonnées Japon »).")
+    for missing in reel["notes"]:
+        st.warning(missing)
     st.video(str(reel["video"]))
     st.download_button("Télécharger le MP4", reel["video"].read_bytes(), file_name=reel["download_name"],
                        mime="video/mp4", type="primary", width="stretch")
     st.caption("Sur iPhone : touchez Télécharger, ouvrez l'app Fichiers › Téléchargements, touchez la vidéo, "
                "puis Partager › Enregistrer la vidéo pour la retrouver dans Photos.")
-    if st.button("Nouvelle variante (autre ordre, autres transitions)", width="stretch"):
+    if st.button("Nouvelle variante (autre ordre, autres images)", width="stretch"):
         go(job=jobs.start(reel["place"], reel["seconds"], list(SOURCES), reel["seed"] + 1, **prefs()).id)
 
     with st.expander("Ajouter mes vidéos et photos"):
         st.caption("Vos propres prises de vue passent en premier dans le nouveau montage. "
                    "Vidéos (MP4, MOV) et photos (JPG, PNG, HEIC) depuis votre pellicule.")
-        files = st.file_uploader("Vos médias", type=list(uploads.VIDEO_TYPES + uploads.PHOTO_TYPES),
-                                 accept_multiple_files=True, label_visibility="collapsed",
-                                 key=f"up_{reel['name']}")
+        files = st.file_uploader("Vos médias", type=MEDIA_TYPES, accept_multiple_files=True,
+                                 label_visibility="collapsed", key=f"up_{reel['name']}")
         if st.button("Refaire le Reel avec mes médias", type="primary", disabled=not files, width="stretch"):
             mine = [uploads.save(f.name, f.getvalue()) for f in files]
             kept = [m for m in reel["media"] if m.role != "country"]
